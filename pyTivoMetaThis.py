@@ -42,10 +42,11 @@ from xml.etree.ElementTree import parse, Element, SubElement
 from time import gmtime, strftime, strptime
 from datetime import datetime
 
-# Import the IMDbPY package.
+# lookup movies (using the OMDB API)
 IMDB = 1
 ## using the Open Movie Database at http://www.omdbapi.com instead
-IMDB_API = '7903bcd4'
+# this is my APIKEY. it's limited to 1000 requests per day. users should request their own (it's free) at https://www.omdbapi.com/apikey.aspx
+IMDB_API = '7903bcd4' 
 IMDB_URL = 'http://www.omdbapi.com/?apikey=' + IMDB_API 
 
 # try:
