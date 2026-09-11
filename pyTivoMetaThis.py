@@ -41,13 +41,18 @@ from optparse import OptionParser
 from xml.etree.ElementTree import parse, Element, SubElement
 from time import gmtime, strftime, strptime
 from datetime import datetime
+
 # Import the IMDbPY package.
 IMDB = 1
-try:
-	import imdb
-except ImportError:
-	print ('IMDB module could not be loaded. Movie Lookups will be disabled. See http://imdbpy.sourceforge.net')
-	IMDB = 0
+## using the Open Movie Database at http://www.omdbapi.com instead
+IMDB_API = '7903bcd4'
+IMDB_URL = 'http://www.omdbapi.com/?apikey=' + IMDB_API 
+
+# try:
+# 	import imdb
+# except ImportError:
+# 	print ('IMDB module could not be loaded. Movie Lookups will be disabled. See http://imdbpy.sourceforge.net')
+# 	IMDB = 0
 
 # Which country's release date do we want to see:
 COUNTRY = 'USA'
@@ -261,8 +266,9 @@ def getSeriesId_TVMAZE(MirrorURL, show_name, showDir):
 		debug(3, 'Lookup url: %s' % url)
 		response = requests.get(url)
 		if response.status_code == 200:
-			show = response.json()
-			seriesid = show['id']
+			seriesJSON = response.json()
+			debug(3, 'Show found! : %s' % seriesJSON['name'])
+			# seriesid = show['id']
 		elif response.status_code == 404:
 			debug(1, "No series information found for %s" % show_name)
 			sys.exit(1)
@@ -382,16 +388,23 @@ def getEpisodeInfoJSON(MirrorURL, seriesid, season, episode):
 			episodeInfoJSON = response.json()
 			episodeId = episodeInfoJSON['id']
 		else:
-			raise (response.text)
+			if 'message' in response.json():
+				raise Exception(response.json()['message'])
+			else:
+				raise Exception(response.text)
 		
 		url = MirrorURL + GETEPISODEDETAILS_URL + str(episodeId) + '?embed[]=guestcast&embed[]=guestcrew'
 		response = requests.get(url)
 		if response.status_code == 200:
 			episodeInfoJSON = response.json()
 		else:
-			raise (response.text)
+			if 'message' in response.json():
+				raise Exception(response.json()['message'])
+			else:
+				raise Exception(response.text)
+
 		
-	except Exception as e:
+	except BaseException as e:
 		debug(0,"!! Error in getEpisodeInfoJSON looking up data for this episode, skipping.")
 		print( "exception is: %s" % e)
 		episodeInfoJSON = None
@@ -755,30 +768,55 @@ def formatEpisodeData(e, s, metaDir, f):
 		outFile.close()
 
 
-def formatMovieData(title, dir, fileName, metadataFileName, tags, isTrailer):
+def formatMovieData(title, dir, fileName, metadataFileName, tags, isTrailer=False):
+	"""
+	Perform a lookup on the Open Movie Database for the title and write the metadata to file
+
+	:param title: title to search
+	:type title: str
+	:param dir: folder location of movie file
+	:type dir: str
+	:param fileName: filename of movie file
+	:type fileName: str
+	:param metadataFileName: nname of metadata file
+	:type metadataFileName: str
+	:param tags: folder location of movie file
+	:type tags: str
+	:param isTrailer: is it a trailer? --deprecated
+	:type isTrailer: bool
+
+	:returns: folder location of movie file
+	:rtype: str
+
+	"""
 	line = ""
 
 	debug(1,'Searching IMDb for: ' + title)
-	objIA = imdb.IMDb() # create new object to access IMDB
-	title = str(title, in_encoding, 'replace')
+	# title = str(title, in_encoding, 'replace')
+	url = IMDB_URL + '&type=movie&s=' + title
 	try:
 		# Do the search, and get the results (a list of Movie objects).
-		results = objIA.search_movie(title)
+		response = requests.get(url)
 	except (imdb.IMDbError, e):
 		debug(0,'IMDb lookup error: ' + str(e))
 		sys.exit(3)
 
-	if not results:
+	if response.status_code >= 400 or response.json()['Response']=='False':
 		debug(1,'No matches found.')
 		return
 
+	results = response.json()
+	if 'Search' in results:
+		num_titles = results['totalResults']
+		results = results['Search']
+
 	if options.interactive:
 		# Get number of movies found
-		num_titles = len(results)
+		# num_titles = len(results)
 
 		# If only one found, select and go on
 		if num_titles == 1:
-			movie = results[0]
+			movie = results
 			reportMatch(movie, len(results))
 		else:
 			debug(2,'Found ' + str(num_titles) + ' matches.')
@@ -791,7 +829,7 @@ def formatMovieData(title, dir, fileName, metadataFileName, tags, isTrailer):
 			print ("Num\tTitle")
 			print ("------------------------------------")
 			for i in range(0, num_titles):
-				m_title = results[i]['long imdb title']
+				m_title = results[i]['Title']
 				print ("%d\t%s" % (i, m_title.encode(out_encoding, 'replace')))
 			print ("")
 			try:
@@ -814,135 +852,173 @@ def formatMovieData(title, dir, fileName, metadataFileName, tags, isTrailer):
 				if movie_num < 0 or movie_num > num_titles:
 					print ("Skipping this movie.")
 					return
-			movie = results[movie_num]
+
+			# get the movie details by the IMDB id
+			movieid = results[movie_num]['imdbID']
+			url = IMDB_URL + '&i=' + movieid
+			try:
+				response = requests.get(url)
+			except:
+				debug(0,'IMDb lookup error: ' + str(e))
+				sys.exit(3)
+			movie = response.json()
 			print ("------------------------------------")
 
 	else: # automatically pick first match
-		movie = results[0]
+		if type(results) == list:
+			movie = results[0]
+		elif 'Search' in results:
+			movieid = results['Search'][0]['imdbID']
+			url = IMDB_URL + '&i=' + movieid
+			try:
+				# Do the search, and get the results (a list of Movie objects).
+				response = requests.get(url)
+				movie = response.json()
+			except (imdb.IMDbError, e):
+				debug(0,'IMDb lookup error: ' + str(e))
+				sys.exit(3)
+		else:
+			movie = results
 		reportMatch(movie, len(results))
 
-	# So far the Movie object only contains basic information like the
-	# title and the year; retrieve main information:
-	try:
-		objIA.update(movie)
-		#debug(3,movie.summary())
-	except (Exception, e):
-		debug(0,'Warning: unable to get extended details from IMDb for: ' + str(movie))
-		debug(0,'         You may need to update your imdbpy module.')
+	# # So far the Movie object only contains basic information like the
+	# # title and the year; retrieve main information:
+	# try:
+	# 	objIA.update(movie)
+	# 	#debug(3,movie.summary())
+	# except (Exception, e):
+	# 	debug(0,'Warning: unable to get extended details from IMDb for: ' + str(movie))
+	# 	debug(0,'         You may need to update your imdbpy module.')
 
 	# title
-	line = "title : %s %s\n" % (movie['title'], tags)
+	line = "title : %s %s\n" % (movie['Title'], tags)
 
 	# movieYear
-	line += "movieYear : %s\n" % movie['year']
+	line += "movieYear : %s\n" % movie['Year']
 
 	reldate = ''
-	if isTrailer:
-		try:
-			# This slows down the process, so only do it for trailers
-			objIA.update(movie, 'release dates')
-		except (Exception, e):
-			debug(1,'Warning: unable to get release date.')
-		if 'release dates' in movie.keys() and len(movie['release dates']):
-			reldate += relDate(movie['release dates']) + '. '
+	# if isTrailer:
+	# 	try:
+	# 		# This slows down the process, so only do it for trailers
+	# 		objIA.update(movie, 'release dates')
+	# 	except (Exception, e):
+	# 		debug(1,'Warning: unable to get release date.')
+	# 	if 'release dates' in movie.keys() and len(movie['release dates']):
+	# 		reldate += relDate(movie['release dates']) + '. '
+	if 'Released' in movie: 
+		reldate = movie['Released']
+	
 	# description
 	line += 'description : ' + reldate
-	if "plot outline" in movie.keys():
-		line += movie['plot outline']
+	if "Plot" in movie:
+		line += movie['Plot']
+	
 	# IMDB score if available
-	if "rating" in movie.keys():
-		line += " IMDB: %s/10" % movie['rating']
+	if "Ratings" in movie:
+		line += " IMDB: %s" % [r['Value'] for r in movie['Ratings'] if r['Source']=='Internet Movie Database']
+		line += " RT: %s" % [r['Value'] for r in movie['Ratings'] if r['Source']=='Rotten Tomatoes']
 	line += "\n"
 
 	# isEpisode always false for movies
 	line += "isEpisode : false\n"
-	# starRating
-	if "rating" in movie.keys():
-		line += "starRating : x%s\n" % (int((movie['rating']-1)/1.3+1))
-	# mpaaRating
-	# kind of a hack for now...
-	# maybe parsing certificates would work better?
-	if "mpaa" in movie.keys():
-		mpaaStr = movie['mpaa']
-		mpaaRating = ""
-		if "Rated G " in mpaaStr:
-			mpaaRating = "G1"
-		elif "Rated PG " in mpaaStr:
-			mpaaRating = "P2"
-		elif "Rated PG-13 " in mpaaStr:
-			mpaaRating = "P3"
-		elif "Rated R " in mpaaStr:
-			mpaaRating = "R4"
-		elif "Rated X " in mpaaStr:
-			mpaaRating = "X5"
-		elif "Rated NC-17 " in mpaaStr:
-			mpaaRating = "N6"
+	# # starRating
+	# if "rating" in movie.keys():
+	# 	line += "starRating : x%s\n" % (int((movie['rating']-1)/1.3+1))
 
-		if mpaaRating:
-			line += "mpaaRating : %s\n" % mpaaRating
+	# mpaaRating
+	if "Rated" in movie.keys():
+		mpaaStr = movie['Rated']
+		# mpaaRating = ""
+		# if "Rated G " in mpaaStr:
+		# 	mpaaRating = "G1"
+		# elif "Rated PG " in mpaaStr:
+		# 	mpaaRating = "P2"
+		# elif "Rated PG-13 " in mpaaStr:
+		# 	mpaaRating = "P3"
+		# elif "Rated R " in mpaaStr:
+		# 	mpaaRating = "R4"
+		# elif "Rated X " in mpaaStr:
+		# 	mpaaRating = "X5"
+		# elif "Rated NC-17 " in mpaaStr:
+		# 	mpaaRating = "N6"
+
+		# if mpaaRating:
+		line += "mpaaRating : %s\n" % mpaaStr
 
 	#vProgramGenre and vSeriesGenre
-	if "genres" in movie.keys():
-		for i in movie['genres']:
+	if "Genre" in movie:
+		genres = movie['Genre'].split(',')
+		for i in genres:
 			line += "vProgramGenre : %s\n" % i
-		for i in movie['genres']:
+		for i in genres:
 			line += "vSeriesGenre : %s\n" % i
 		if options.genre:
-			linkGenres(dir, fileName, metadataFileName, movie['genres'])
-
-	try:
-		pass
-		#don't enable the next line unless you want the full cast, actors + everyone else who worked on the movie
-		#objIA.update(movie, 'full credits')
-	except:
-		debug(1, "Warning: unable to retrieve full credits.")
+			linkGenres(dir, fileName, metadataFileName, genres)
 
 	# vDirector (suppress repeated names)
-	if "director" in movie.keys():
-		directors = {}
-		for i in movie['director']:
-			if not directors.has_key(i['name']):
-				directors[i['name']] = 1
-				line += "vDirector : %s|\n" % i['name']
-				debug(3,'vDirector : ' + i['name'])
+	if "Director" in movie:
+		directors = movie['Director'].split(',')
+		for i in directors:
+			line += "vDirector : %s|\n" % i
+			debug(3,'vDirector : ' + i)
+
 	# vWriter (suppress repeated names)
-	if "writer" in movie.keys():
-		writers = {}
-		for i in movie['writer']:
-			if not writers.has_key(i['name']):
-				writers[i['name']] = 1
-				line += "vWriter : %s|\n" % i['name']
-				debug(3,'vWriter : ' + i['name'])
+	if "Writer" in movie:
+		writers = movie['Writer']
+		for i in writers:
+			line += "vWriter : %s|\n" % i
+			debug(3,'vWriter : ' + i)
+
 	# vActor (suppress repeated names)
-	if "cast" in movie.keys():
-		actors = {}
-		for i in movie['cast']:
-			if not actors.has_key(i['name']):
-				actors[i['name']] = 1
-				line += "vActor : %s|\n" % i['name']
-				debug(3,'vActor : ' + i['name'])
+	if "Actors" in movie:
+		actors = movie['Actors'].split(',')
+		for i in actors:
+			line += "vActor : %s|\n" % i
+			debug(3,'vActor : ' + i)
 
 	debug(2,"Writing to %s" % metadataFileName)
 	outFile = open(metadataFileName, 'w')
-	outFile.writelines(line.encode(file_encoding, 'replace'))
+	outFile.write(line)
 	outFile.close()
 
 
 
 def linkGenres(dir, fileName, metadataPath, genres):
+	"""
+	Makes symlinks to movie from every genere folder
+
+	:param dir: location of movie
+	:type dir: str
+	:param fileName: filename of movie
+	:type fileName: str
+	:param metadataPath: path to metadata filder
+	:type metadataPath: str
+	:param genres: list of genres
+	:type genres: list
+	"""
 	for genre in genres:
 		genrepath = os.path.join(options.genre, genre)
 		mkdirIfNeeded(genrepath)
+
 		# Create a symlink to the video
 		link = os.path.join(genrepath, fileName)
 		filePath = os.path.join(dir, fileName)
 		mkLink(link, filePath)
+		
 		# Create a symlink to the metadata
 		metadataDir = os.path.basename(metadataPath)
 		link = os.path.join(genrepath, metadataDir)
 		mkLink(link, metadataPath)
 
 def mkLink(linkName, filePath):
+	"""
+	Makes a symlink
+	
+	:param linkName: name of link
+	:type linkName: str
+	:param filePath: target of link
+	:type filePath: str
+	"""
 	if PY26:
 		# Needs python 2.6+ for relpath()
 		target = os.path.relpath(filePath, os.path.dirname(linkName))
@@ -997,7 +1073,7 @@ def parseMovie(dir, filename, metadataFileName, isTrailer):
 
 	# Most tags and group names come after the year (which is often in parens or brackets)
 	# Using the year when searching IMDb will help, so try to find it.
-	m = re.match(r'(.*?\w+.*?)(?:([[(])|(\W))(.*?)((?:19|20)\d\d)(?(2)[])]|(\3|$))(.*?)$', title)
+	m = re.match(r'(.*?\w+.*?)(?:([\[\(])|(\W))(.*?)((?:19|20)\d\d)(?(2)[\]\)]|(\3|$))(.*?)$', title)
 	if m:
 		(tags, junk) = extractTags(title)
 		(title, year, soup1, soup2) = m.group(1,5,4,7)
@@ -1060,9 +1136,9 @@ def fixSpaces(title):
 	for ph in placeholders:
 		title = re.sub(ph, ' ', title)
 	# Remove leftover spaces before/after the year
-	title = re.sub('( ', '(', title)
-	title = re.sub(' )', ')', title)
-	title = re.sub('()', '', title)
+	title = re.sub(r'\( ', '(', title)
+	title = re.sub(r' \)', ')', title)
+	title = re.sub(r'\(\)', '', title)
 	return title
 
 def parseTV(MirrorURL, match, metaDir, metaFile, showDir):
